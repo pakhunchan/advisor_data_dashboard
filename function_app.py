@@ -106,50 +106,9 @@ def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(traceback.format_exc(), status_code=400)
 
 
-##########################################
+#####################################
 # Scope1 -Part3 - Get Student Number
-##########################################
-
-
-@app.function_name(name="GetStudentNumber")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_student_number(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        # retrieve payload and initialize variables
-        request = req.get_json()
-        anthology_api_key = request.pop("anthology_api_key")
-        database_connector = request.pop("database_connector")
-        logging.info(json.dumps({"Request payload": request}, default=str))
-
-        anthology_base_url = request["anthology_base_url"]
-        student = request["student"]
-        studentId = student["studentId"]
-
-        # first, try to get studentNumber from the SQL db
-        studentNumber = get_student_number_sql_server(database_connector, studentId)
-
-        # try getting it from the API if no record in SQL db
-        if not studentNumber:
-            studentNumber = get_student_number_api(anthology_api_key, anthology_base_url, studentId)
-            # return error if no record from the API
-            if not studentNumber:
-                return func.HttpResponse("Anthology does not have a studentNumber for this studentId", status_code=400)
-            # otherwise, insert API record into SQL db
-            insert_student_number_sql(database_connector, studentId, studentNumber)
-
-        student["studentNumber"] = studentNumber
-        logging.info(f"student: {json.dumps(student, default=str)}")
-
-        return func.HttpResponse(json.dumps(student, default=str), status_code=200)
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-#######################################################
-# Scope1 -Part3 Alternate Approach - Get Student Number
-#######################################################
+#####################################
 
 import httpx
 import json
