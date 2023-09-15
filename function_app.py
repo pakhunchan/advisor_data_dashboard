@@ -2,6 +2,8 @@ import azure.functions as func
 import logging
 import json
 import traceback
+import pymssql
+import asyncio
 from get_and_submit_anthology import (
     get_anthology,
     get_earliest_participation_date,
@@ -15,7 +17,7 @@ from create_student_status_history_record import create_student_status_history_r
 
 from get_anthology_and_canvas_term_ids import get_anthology_term_info, get_canvas_term_id
 from get_students import get_students, get_school_status_ids
-from get_student_number import get_student_number_sql_server, get_student_number_api, insert_student_number_sql
+from get_student_number import main
 from get_courses import get_canvas_courses, get_zero_credit_anthology_courses
 from get_submissions import get_submissions, add_submission, make_student_id_dict, should_not_skip
 from aggregate_submissions import (
@@ -109,72 +111,6 @@ def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
 #####################################
 # Scope1 -Part3 - Get Student Number
 #####################################
-
-import httpx
-import json
-from typing import Union
-import asyncio
-import pymssql
-
-
-async def get_student_number_api_modified(
-    anthology_api_key: str, anthology_base_url: str, studentId: int
-) -> Union[None, int]:
-    url = f"{anthology_base_url}/api/commands/Common/Student/get"
-
-    body = {"payload": {"id": f"{studentId}"}}
-    headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
-
-    transport = httpx.AsyncHTTPTransport(retries=3)
-    async with httpx.AsyncClient(transport=transport) as client:
-        response = await client.post(url=url, data=json.dumps(body), headers=headers, timeout=30.0)
-        logging.info(f"Status code {response.status_code}. {response.text}")
-
-        response.raise_for_status()
-        results = response.json()
-
-        studentNumber_str = results.get("payload", {}).get("data", {}).get("studentNumber")
-        studentNumber = int(studentNumber_str) if studentNumber_str else None
-
-    return studentNumber
-
-
-async def get_student_info(
-    anthology_api_key: str, anthology_base_url: str, student: dict, student_id_to_num_dict: dict
-) -> dict:
-    if student["studentId"] in student_id_to_num_dict:
-        student_info = {
-            **student,
-            "studentNumber": student_id_to_num_dict[student["studentId"]],
-            "is_from_db": True,
-        }
-    else:
-        student_info = {
-            **student,
-            "studentNumber": await get_student_number_api_modified(
-                anthology_api_key, anthology_base_url, student["studentId"]
-            ),
-            "is_from_db": False,
-        }
-
-    return student_info
-
-
-async def main(anthology_api_key: str, anthology_base_url: str, students: dict, student_id_to_num_dict: dict):
-    amount_per_chunk = 10
-    num_of_chunks = (len(students) // amount_per_chunk) + 1
-
-    updated_student_info = []
-    for i in range(1, num_of_chunks + 1):
-        tasks = [
-            get_student_info(anthology_api_key, anthology_base_url, student, student_id_to_num_dict)
-            for student in students[amount_per_chunk * (i - 1) : amount_per_chunk * i]
-        ]
-
-        result = await asyncio.gather(*tasks)
-        updated_student_info.extend(result)
-
-    return updated_student_info
 
 
 @app.function_name(name="GetStudentNumberInBulk")
