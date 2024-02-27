@@ -21,7 +21,11 @@ def check_if_must_update_student_status(
     if result["payload"]["data"]["schoolStatusId"] in promotable_enrollment_status_ids:
         FDP = get_FDP(result)
         list_of_course_ids = get_list_of_course_ids(
-            anthology_api_key, anthology_base_url, studentId, studentEnrollmentPeriodId, exclude_anthology_course_codes
+            anthology_api_key,
+            anthology_base_url,
+            studentId,
+            studentEnrollmentPeriodId,
+            exclude_anthology_course_codes,
         )
         logging.info(f"list_of_course_ids: {json.dumps(list_of_course_ids)}")
         if not list_of_course_ids:
@@ -29,7 +33,11 @@ def check_if_must_update_student_status(
             return False, None, error_flags, []
 
         EAD, courses_with_missing_attendance_data = get_enrollment_activation_date(
-            anthology_api_key, anthology_base_url, list_of_course_ids, end_date, earliest_participation_date
+            anthology_api_key,
+            anthology_base_url,
+            list_of_course_ids,
+            end_date,
+            earliest_participation_date,
         )
         if not EAD:
             return True, None, error_flags, courses_with_missing_attendance_data
@@ -45,7 +53,12 @@ def check_if_must_update_student_status(
             must_update_student_status = False
             error_flags.add("error_flag_EAD_gt_earliest_participation")
 
-        return must_update_student_status, EAD, error_flags, courses_with_missing_attendance_data
+        return (
+            must_update_student_status,
+            EAD,
+            error_flags,
+            courses_with_missing_attendance_data,
+        )
 
     # if student's enrollment status id is not 5,8,9,69, then no need to update
     return False, None, error_flags, []
@@ -84,7 +97,11 @@ def get_list_of_course_ids(
     )
 
     relevant_course_list_ids = [
-        {"studentCourseId": course["Id"], "classSectionId": course["ClassSectionId"], "drop_date": course["DropDate"]}
+        {
+            "studentCourseId": course["Id"],
+            "classSectionId": course["ClassSectionId"],
+            "drop_date": course["DropDate"],
+        }
         for course in full_course_list
         if (course["Status"] in {"C", "S", "D"})
         and (course["ClassSectionId"] not in exclude_anthology_class_section_ids)
@@ -94,7 +111,9 @@ def get_list_of_course_ids(
 
 
 def get_exclude_anthology_class_section_ids(
-    exclude_anthology_course_codes: list, anthology_api_key: str, anthology_base_url: str
+    exclude_anthology_course_codes: list,
+    anthology_api_key: str,
+    anthology_base_url: str,
 ) -> set:
     url = f"{anthology_base_url}/ds/campusnexus/ClassSections"
     headers = {"ApiKey": anthology_api_key}
@@ -114,7 +133,11 @@ def get_exclude_anthology_class_section_ids(
         f"Excluding the following Anthology classSectionIds: {json.dumps(list(set_of_exclude_anthology_course_codes))}"
     )
 
-    return {course["Id"] for course in list_of_courses if course["CourseCode"] in set_of_exclude_anthology_course_codes}
+    return {
+        course["Id"]
+        for course in list_of_courses
+        if course["CourseCode"] in set_of_exclude_anthology_course_codes
+    }
 
 
 def get_enrollment_activation_date(
@@ -131,17 +154,25 @@ def get_enrollment_activation_date(
         logging.info(f"course_ids: {json.dumps(course_ids, default=str)}")
 
         attendance_dates, has_missing_attendance_data = get_attendance_dates(
-            anthology_api_key, anthology_base_url, course_ids, end_date, earliest_participation_date
+            anthology_api_key,
+            anthology_base_url,
+            course_ids,
+            end_date,
+            earliest_participation_date,
         )
 
         all_course_meeting_dates.extend(attendance_dates)
 
-        courses_with_missing_attendance_data.append(
-            course_ids["classSectionId"]
-        ) if has_missing_attendance_data else None
+        (
+            courses_with_missing_attendance_data.append(course_ids["classSectionId"])
+            if has_missing_attendance_data
+            else None
+        )
 
     logging.info(f"all_course_meeting_dates: {all_course_meeting_dates}")
-    logging.info(f"courses_with_missing_attendance_data: {courses_with_missing_attendance_data}")
+    logging.info(
+        f"courses_with_missing_attendance_data: {courses_with_missing_attendance_data}"
+    )
 
     if not all_course_meeting_dates:
         return "", courses_with_missing_attendance_data
@@ -158,7 +189,11 @@ def get_enrollment_activation_date(
 
 # pulls all relevant class meeting dates (excludes absences and cancelled classes)
 def get_attendance_dates(
-    anthology_api_key: str, anthology_base_url: str, course_ids: dict, end_date: str, earliest_participation_date: str
+    anthology_api_key: str,
+    anthology_base_url: str,
+    course_ids: dict,
+    end_date: str,
+    earliest_participation_date: str,
 ) -> tuple[list, Union[bool, None]]:
     url = f"{anthology_base_url}/ds/campusnexus/Attendance/CampusNexus.GetStudentAttendanceClassDetailList(studentCourseId={course_ids['studentCourseId']},classSectionId={course_ids['classSectionId']},startDate='1900-01-01',endDate='{end_date}')"
     headers = {"ApiKey": anthology_api_key}
@@ -189,13 +224,17 @@ def get_attendance_dates(
         course_meeting_dates = [
             meeting["AttendanceDate"]
             for meeting in course_meetings
-            if (meeting["Attended"] == None or meeting["Attended"] > 0) and meeting["Status"] != "C"
+            if (meeting["Attended"] == None or meeting["Attended"] > 0)
+            and meeting["Status"] != "C"
         ]
 
     # check if the course has any missing attendance data with a date earlier than the earliest participation date
     has_missing_attendance_data = False
     for meeting in course_meetings:
-        if meeting["AttendanceDate"][:10] < earliest_participation_date[:10] and meeting["Attended"] == None:
+        if (
+            meeting["AttendanceDate"][:10] < earliest_participation_date[:10]
+            and meeting["Attended"] == None
+        ):
             has_missing_attendance_data = True
 
     return course_meeting_dates, has_missing_attendance_data

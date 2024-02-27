@@ -10,19 +10,24 @@ def update_course_statuses(
     studentEnrollmentPeriodId: int,
     studentId: int,
 ) -> list[dict]:
-    student_courses = get_student_courses(anthology_api_key, anthology_base_url, studentEnrollmentPeriodId, studentId)
+    student_courses = get_student_courses(
+        anthology_api_key, anthology_base_url, studentEnrollmentPeriodId, studentId
+    )
 
     student_course_ids = [
         course["Id"]
         for course in student_courses
-        if (course["ClassSectionId"] in anthology_course_ids) and course["Status"] in {"S"}
+        if (course["ClassSectionId"] in anthology_course_ids)
+        and course["Status"] in {"S"}
     ]
 
     if not student_course_ids:
         return []
 
     student_course_payloads_unmodified = [
-        get_student_course_payload(student_course_id, anthology_api_key, anthology_base_url)
+        get_student_course_payload(
+            student_course_id, anthology_api_key, anthology_base_url
+        )
         for student_course_id in student_course_ids
     ]
 
@@ -32,20 +37,28 @@ def update_course_statuses(
     ]
 
     course_status_change_logs = [
-        update_student_course(student_course_payload, anthology_api_key, anthology_base_url)
+        update_student_course(
+            student_course_payload, anthology_api_key, anthology_base_url
+        )
         for student_course_payload in student_course_payloads_modified
         if student_course_payload
     ]
 
-    logging.info(f"student_course_status_change_logs: {json.dumps(course_status_change_logs, default=str)}")
+    logging.info(
+        f"student_course_status_change_logs: {json.dumps(course_status_change_logs, default=str)}"
+    )
 
     return course_status_change_logs
 
 
 def get_student_courses(
-    anthology_api_key: str, anthology_base_url: str, studentEnrollmentPeriodId: str, studentId: str
+    anthology_api_key: str,
+    anthology_base_url: str,
+    studentEnrollmentPeriodId: str,
+    studentId: str,
 ) -> list[dict]:
-    with httpx.Client() as client:
+    transport = httpx.HTTPTransport(retries=3)
+    with httpx.Client(transport=transport) as client:
         url = f"{anthology_base_url}/ds/campusnexus/StudentCourses?$filter=StudentEnrollmentPeriodId eq {studentEnrollmentPeriodId} and StudentId eq {studentId}"
         headers = {"ApiKey": anthology_api_key}
 
@@ -58,12 +71,15 @@ def get_student_courses(
     return student_courses
 
 
-def get_student_course_payload(student_course_id: list, anthology_api_key: str, anthology_base_url: str) -> dict:
+def get_student_course_payload(
+    student_course_id: list, anthology_api_key: str, anthology_base_url: str
+) -> dict:
     url = f"{anthology_base_url}/api/commands/Academics/StudentCourse/get"
     headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
     body = {"payload": {"Id": student_course_id}}
 
-    with httpx.Client() as client:
+    transport = httpx.HTTPTransport(retries=3)
+    with httpx.Client(transport=transport) as client:
         response = client.post(url=url, headers=headers, data=json.dumps(body))
         results = response.json()
 
@@ -71,7 +87,9 @@ def get_student_course_payload(student_course_id: list, anthology_api_key: str, 
 
 
 def modify_student_course_payload(student_course_payload: dict) -> dict:
-    logging.info(f"student_course_payload: {json.dumps(student_course_payload, default=str)}")
+    logging.info(
+        f"student_course_payload: {json.dumps(student_course_payload, default=str)}"
+    )
 
     modified_payload = {
         "payload": {
@@ -83,16 +101,23 @@ def modify_student_course_payload(student_course_payload: dict) -> dict:
     # only need to update course if status is currently "S - scheduled".
     if modified_payload["payload"]["entity"]["status"] == "S":
         # adding this temporary field "priorCourseStatus". will use + remove it in the next step
-        modified_payload["payload"]["priorCourseStatus"] = modified_payload["payload"]["entity"]["status"]
+        modified_payload["payload"]["priorCourseStatus"] = modified_payload["payload"][
+            "entity"
+        ]["status"]
         modified_payload["payload"]["entity"]["status"] = "C"
+        # Need to add previousStatus = "S"
         return modified_payload
 
     else:
         return {}
 
 
-def update_student_course(student_course_payload: dict, anthology_api_key: str, anthology_base_url: str) -> int:
-    url = f"{anthology_base_url}/api/commands/Academics/StudentCourse/updateStudentCourse"
+def update_student_course(
+    student_course_payload: dict, anthology_api_key: str, anthology_base_url: str
+) -> int:
+    url = (
+        f"{anthology_base_url}/api/commands/Academics/StudentCourse/updateStudentCourse"
+    )
     headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
     body = student_course_payload
 
@@ -108,12 +133,16 @@ def update_student_course(student_course_payload: dict, anthology_api_key: str, 
 
     course_status_change_log = {
         "studentId": body["payload"]["entity"]["studentId"],
-        "studentEnrollmentPeriodId": body["payload"]["entity"]["studentEnrollmentPeriodId"],
+        "studentEnrollmentPeriodId": body["payload"]["entity"][
+            "studentEnrollmentPeriodId"
+        ],
         "studentCourseId": body["payload"]["entity"]["id"],
         "priorCourseStatus": priorCourseStatus,
         "newCourseStatus": body["payload"]["entity"]["status"],
         # "status_code": response.status_code
     }
-    logging.info(f"course_status_change_log: {json.dumps(course_status_change_log, default=str)}")
+    logging.info(
+        f"course_status_change_log: {json.dumps(course_status_change_log, default=str)}"
+    )
 
     return course_status_change_log

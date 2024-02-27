@@ -3,7 +3,9 @@ import json
 import logging
 
 
-def get_school_status_ids(anthology_base_url: str, anthology_api_key: str, school_status_codes: set) -> list:
+def get_school_status_ids(
+    anthology_base_url: str, anthology_api_key: str, school_status_codes: set
+) -> list:
     url = f"{anthology_base_url}/ds/campusnexus/SchoolStatuses"
     headers = {"ApiKey": anthology_api_key}
 
@@ -14,14 +16,20 @@ def get_school_status_ids(anthology_base_url: str, anthology_api_key: str, schoo
 
     results = response.json()
     school_statuses = results["value"]
-    school_status_ids = [status["Id"] for status in school_statuses if status["Code"] in school_status_codes]
+    school_status_ids = [
+        status["Id"]
+        for status in school_statuses
+        if status["Code"] in school_status_codes
+    ]
 
     logging.info(f"school_status_ids: {json.dumps(school_status_ids, default=str)}")
 
     return school_status_ids
 
 
-def get_students(filtered_school_status_ids: list, anthology_base_url: str, anthology_api_key: str) -> list:
+def get_students(
+    filtered_school_status_ids: list, anthology_base_url: str, anthology_api_key: str
+) -> list:
     students = []
     headers = {"ApiKey": anthology_api_key}
 

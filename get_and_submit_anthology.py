@@ -11,7 +11,9 @@ def get_anthology(anthology_base_url, studentEnrollmentPeriodId, anthology_api_k
 
     transport = httpx.HTTPTransport(retries=3)
     with httpx.Client(transport=transport) as client:
-        response = client.post(url=url, data=json.dumps(body), headers=headers, timeout=30.0)
+        response = client.post(
+            url=url, data=json.dumps(body), headers=headers, timeout=30.0
+        )
         logging.info(f"Status code of GET: {json.dumps(response.status_code)}")
 
     response.raise_for_status()
@@ -123,7 +125,9 @@ def modify_anthology_payload(result, must_update_student_status, earliest):
             del result[item]
 
     # note: here's where the enrollment status codes come into play
-    logging.info(f'result["payload"]["entity"]["schoolStatusId"]: {result["payload"]["entity"]["schoolStatusId"]}')
+    logging.info(
+        f'result["payload"]["entity"]["schoolStatusId"]: {result["payload"]["entity"]["schoolStatusId"]}'
+    )
 
     if must_update_student_status:
         result["payload"]["entity"]["schoolStatusId"] = 13
@@ -149,7 +153,9 @@ def get_actual_start_date(result: dict, earliest: str) -> str:
         if property["name"] == "First Date of Student Participation":
             FDP = property["value"]
 
-    logging.info(f"Within get_actual_start_date(), FDP was {FDP}, and earliest was {earliest}.")
+    logging.info(
+        f"Within get_actual_start_date(), FDP was {FDP}, and earliest was {earliest}."
+    )
 
     # returning formatted_earliest if FDP is null
     if not FDP:
@@ -167,7 +173,9 @@ def post_anthology(anthology_base_url, body, anthology_api_key):
 
     transport = httpx.HTTPTransport(retries=3)
     with httpx.Client(transport=transport) as client:
-        response = client.post(url=url, headers=headers, data=json.dumps(body), timeout=30.0)
+        response = client.post(
+            url=url, headers=headers, data=json.dumps(body), timeout=30.0
+        )
         logging.info(
             f"For the post_anthology() API, the status code was {response.status_code}. response.text: {json.dumps(response.text, default=str)}"
         )
@@ -187,8 +195,12 @@ def generate_function_response(
     course_status_change_logs: list[dict],
     courses_with_missing_attendance_data: list[int],
 ) -> dict:
-    new_FDP = f"Changed to {update_FDP}" if update_FDP else "No changes made to this field"
-    new_LDP = f"Changed to {update_LDP}" if update_LDP else "No changes made to this field"
+    new_FDP = (
+        f"Changed to {update_FDP}" if update_FDP else "No changes made to this field"
+    )
+    new_LDP = (
+        f"Changed to {update_LDP}" if update_LDP else "No changes made to this field"
+    )
 
     return {
         "studentEnrollmentPeriodId": studentEnrollmentPeriodId,
@@ -197,12 +209,14 @@ def generate_function_response(
         "EAD": EAD,
         "earliest_participation_date": earliest_participation_date,
         "Updated student statuses": must_update_student_status,
-        "error_flag_participation_but_no_registered_courses": True
-        if "error_flag_participation_but_no_registered_courses" in error_flags
-        else False,
-        "error_flag_EAD_gt_earliest_participation": True
-        if "error_flag_EAD_gt_earliest_participation" in error_flags
-        else False,
+        "error_flag_participation_but_no_registered_courses": (
+            True
+            if "error_flag_participation_but_no_registered_courses" in error_flags
+            else False
+        ),
+        "error_flag_EAD_gt_earliest_participation": (
+            True if "error_flag_EAD_gt_earliest_participation" in error_flags else False
+        ),
         "course_status_change_logs": course_status_change_logs,
         "courses_with_missing_attendance_data": courses_with_missing_attendance_data,
     }
