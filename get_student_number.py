@@ -37,10 +37,10 @@ async def get_student_info(
     student: dict,
     student_id_to_num_dict: dict,
 ) -> dict:
-    if student["studentId"] in student_id_to_num_dict:
+    if int(student["studentId"]) in student_id_to_num_dict:
         student_info = {
             **student,
-            "studentNumber": student_id_to_num_dict[student["studentId"]],
+            "studentNumber": student_id_to_num_dict[int(student["studentId"])],
             "is_from_db": True,
         }
     else:

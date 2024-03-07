@@ -22,8 +22,7 @@ def convert_canvas_course_ids_to_anthology_course_ids(
     list_of_canvas_and_anthology_course_ids: list[dict],
 ) -> list[dict]:
     dict_of_canvas_and_anthology_course_ids = {
-        course["canvas_course_id"]: course["anthology_course_id"]
-        for course in list_of_canvas_and_anthology_course_ids
+        course["canvas_course_id"]: course["anthology_course_id"] for course in list_of_canvas_and_anthology_course_ids
     }
 
     combined_submission_data_with_anthology_ids = [
@@ -32,9 +31,7 @@ def convert_canvas_course_ids_to_anthology_course_ids(
             "studentEnrollmentPeriodId": course["studentEnrollmentPeriodId"],
             "earliest": course["earliest"],
             "latest": course["latest"],
-            "anthology_course_id": dict_of_canvas_and_anthology_course_ids[
-                course["canvas_course_id"]
-            ],
+            "anthology_course_id": dict_of_canvas_and_anthology_course_ids[course["canvas_course_id"]],
         }
         for course in combined_submission_data_with_canvas_ids
     ]
@@ -50,21 +47,12 @@ def calculate_participation_for_each_student(
     # creating a dictionary from the data
     canvas_student_participation_dict = {}
     for submission in combined_submission_data:
-        logging.info(
-            f"submission in combined_submission_data: {json.dumps(submission, default=str)}"
-        )
-        canvas_student_participation_dict = update_submissions_dictionary(
-            canvas_student_participation_dict, submission
-        )
+        logging.info(f"submission in combined_submission_data: {json.dumps(submission, default=str)}")
+        canvas_student_participation_dict = update_submissions_dictionary(canvas_student_participation_dict, submission)
 
-    logging.info(
-        f"canvas_student_participation_dict: {json.dumps(canvas_student_participation_dict)}"
-    )
+    logging.info(f"canvas_student_participation_dict: {json.dumps(canvas_student_participation_dict)}")
 
-    student_id_dict = {
-        str(student["studentNumber"]): str(student["studentId"])
-        for student in student_payload
-    }
+    student_id_dict = {str(student["studentNumber"]): str(student["studentId"]) for student in student_payload}
     logging.info(f"student_id_dict: {json.dumps(student_id_dict)}")
 
     canvas_student_participation_list = [
@@ -77,17 +65,13 @@ def calculate_participation_for_each_student(
         for k, v in canvas_student_participation_dict.items()
     ]
 
-    logging.info(
-        f"canvas_student_participation_list: {json.dumps(canvas_student_participation_list, default=str)}"
-    )
+    logging.info(f"canvas_student_participation_list: {json.dumps(canvas_student_participation_list, default=str)}")
 
     return canvas_student_participation_list
 
 
 # function that takes in an assignment submission and updates canvas_student_participation as necessary
-def update_submissions_dictionary(
-    canvas_student_participation: dict, item: dict
-) -> dict:
+def update_submissions_dictionary(canvas_student_participation: dict, item: dict) -> dict:
     studentNumber = item["studentNumber"]
     studentEnrollmentPeriodId = item["studentEnrollmentPeriodId"]
     earliest = item["earliest"]
@@ -106,9 +90,7 @@ def update_submissions_dictionary(
             canvas_student_participation[studentNumber]["earliest"] = earliest
         if latest > canvas_student_participation[studentNumber]["latest"]:
             canvas_student_participation[studentNumber]["latest"] = latest
-        canvas_student_participation[studentNumber]["anthology_course_ids"].append(
-            anthology_course_id
-        )
+        canvas_student_participation[studentNumber]["anthology_course_ids"].append(anthology_course_id)
 
     return canvas_student_participation
 
@@ -141,14 +123,14 @@ def convert_from_utc_to_eastern(
     return canvas_student_participation_utc
 
 
-def separate_students_with_multiple_enrollment(
-    canvas_student_participation_eastern: list[dict],
-) -> tuple[list[dict], list[dict]]:
-    # separate out the students with multiple active enrollments
-    students_with_multiple_enrollment = [
-        canvas_student_participation_eastern.pop(i)
-        for i, student in enumerate(canvas_student_participation_eastern)
-        if isinstance(student["studentEnrollmentPeriodId"], list)
-    ]
+# def separate_students_with_multiple_enrollment(
+#     canvas_student_participation_eastern: list[dict],
+# ) -> tuple[list[dict], list[dict]]:
+#     # separate out the students with multiple active enrollments
+#     students_with_multiple_enrollment = [
+#         canvas_student_participation_eastern.pop(i)
+#         for i, student in enumerate(canvas_student_participation_eastern)
+#         if isinstance(student["studentEnrollmentPeriodId"], list)
+#     ]
 
-    return canvas_student_participation_eastern, students_with_multiple_enrollment
+#     return canvas_student_participation_eastern, students_with_multiple_enrollment

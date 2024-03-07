@@ -3,9 +3,7 @@ import json
 import logging
 
 
-def get_school_status_ids(
-    anthology_base_url: str, anthology_api_key: str, school_status_codes: set
-) -> list:
+def get_school_status_ids(anthology_base_url: str, anthology_api_key: str, school_status_codes: set) -> list:
     url = f"{anthology_base_url}/ds/campusnexus/SchoolStatuses"
     headers = {"ApiKey": anthology_api_key}
 
@@ -16,20 +14,14 @@ def get_school_status_ids(
 
     results = response.json()
     school_statuses = results["value"]
-    school_status_ids = [
-        status["Id"]
-        for status in school_statuses
-        if status["Code"] in school_status_codes
-    ]
+    school_status_ids = [status["Id"] for status in school_statuses if status["Code"] in school_status_codes]
 
     logging.info(f"school_status_ids: {json.dumps(school_status_ids, default=str)}")
 
     return school_status_ids
 
 
-def get_students(
-    filtered_school_status_ids: list, anthology_base_url: str, anthology_api_key: str
-) -> list:
+def get_students(filtered_school_status_ids: list, anthology_base_url: str, anthology_api_key: str) -> list:
     students = []
     headers = {"ApiKey": anthology_api_key}
 
@@ -42,60 +34,40 @@ def get_students(
             results = response.json()
             students.extend(results["value"])
 
-    # for school_status_id in filtered_school_status_ids:
-    #     transport = httpx.HTTPTransport(retries=4)
-    #     with httpx.Client(transport=transport) as client:
-    #         url = f"{anthology_base_url}/ds/campusnexus/StudentEnrollmentPeriods?$filter=SchoolStatusId eq {school_status_id}"
-    #         response = client.get(url=url, headers=headers, timeout=30.0)
-
-    #         results = response.json()
-    #         students.extend(results["value"])
-
-    #     response.raise_for_status()
-
     return students
 
 
-# def get_anthology_term_id(curr_date: str, anthology_api_key: str, anthology_base_url: str) -> tuple[int, list]:
-#     headers = {"ApiKey": anthology_api_key}
-#     url = f"{anthology_base_url}"
+def get_student_ids_for_single_vs_multiple_enrollments(students: list[dict], check_student_enrollment_ids: set) -> dict:
+    students_set = set()
+    student_ids_and_enrollment_ids_dict = {}
 
-#     url = f"{anthology_base_url}/ds/campusnexus/Terms"
-#     headers = {"ApiKey": anthology_api_key}
-#     params = {"$select": "Id, StartDate, EndDate"}
+    for student in students:
+        try:
+            # ie, process all students if check_student_enrollment_ids is empty
+            # or process only students with an enrollment id in check_student_enrollment_ids
+            if not check_student_enrollment_ids or student["Id"] in check_student_enrollment_ids:
+                studentId = str(student["StudentId"])
+                studentEnrollmentPeriodId = str(student["Id"])
 
-#     transport = httpx.HTTPTransport(retries=3)
-#     with httpx.Client(transport=transport) as client:
-#         response = client.get(url=url, params=params, headers=headers, timeout=15.0)
-#         logging.info(f"Status code of /ds/campusnexus/Terms was {response.status_code}. {response.text}")
+                if studentId not in students_set:
+                    student_ids_and_enrollment_ids_dict[studentId] = studentEnrollmentPeriodId
+                    students_set.add(studentId)
+                else:
+                    if studentId in student_ids_and_enrollment_ids_dict and isinstance(
+                        student_ids_and_enrollment_ids_dict[studentId], str
+                    ):
+                        student_ids_and_enrollment_ids_dict[studentId] = [
+                            student_ids_and_enrollment_ids_dict[studentId],
+                            studentEnrollmentPeriodId,
+                        ]
+                    else:
+                        student_ids_and_enrollment_ids_dict[studentId].append(studentEnrollmentPeriodId)
 
-#     response.raise_for_status()
-#     result = response.json()
-#     terms = result["value"]
+        except Exception as err:
+            logging.error(f"Failed student dict was: {json.dumps(student, default=str)}")
+            logging.exception(err)
+            raise
 
-#     active_term_ids = [
-#         term["Id"]
-#         for term in terms
-#         if term["StartDate"] and term["EndDate"] and term["StartDate"] <= curr_date <= term["EndDate"]
-#     ]
+    print(json.dumps({"student_ids_and_enrollment_ids_dict": student_ids_and_enrollment_ids_dict}, default=str))
 
-#     # we are told that term_id 8 should be removed if it gets pulled
-#     active_term_ids.remove(8) if 8 in active_term_ids else None
-
-#     logging.info(f"active_term_ids: {json.dumps(active_term_ids, default=str)}")
-
-#     return active_term_ids
-
-
-# def get_school_statuses(anthology_base_url: str, anthology_api_key: str) -> list:
-#     url = f"{anthology_base_url}/ds/campusnexus/SchoolStatuses"
-#     headers = {"ApiKey": anthology_api_key}
-
-#     transport = httpx.HTTPTransport(retries=2)
-#     with httpx.Client(transport=transport) as client:
-#         response = client.get(url=url, headers=headers, timeout=30.0)
-
-#     results = response.json()
-#     school_statuses = results["value"]
-
-#     return school_statuses
+    return student_ids_and_enrollment_ids_dict
