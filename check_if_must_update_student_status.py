@@ -3,6 +3,7 @@ from datetime import datetime
 import httpx
 import json
 import logging
+import time
 
 
 def check_if_must_update_student_status(
@@ -81,16 +82,21 @@ def get_list_of_course_ids(
     url = f"{anthology_base_url}/ds/campusnexus/StudentCourses?$filter=StudentEnrollmentPeriodId eq {studentEnrollmentPeriodId} and StudentId eq {studentId}"
     headers = {"ApiKey": anthology_api_key}
 
-    transport = httpx.HTTPTransport(retries=3)
-    with httpx.Client(transport=transport) as client:
-        response = client.get(url=url, headers=headers)
-        logging.info(
-            f"Status code for API /ds/campusnexus/StudentCourses was {response.status_code}. response.text: {response.text}"
-        )
-    response.raise_for_status()
-
-    results = response.json()
-    full_course_list = results.get("value", [])
+    max_retries = 3
+    base_delay = 2
+    with httpx.Client() as client:
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.get(url=url, headers=headers, timeout=30.0)
+                response.raise_for_status()
+                results = response.json()
+                full_course_list = results.get("value", [])
+                break
+            except Exception as err:
+                logging.exception(f"Errored on attempt #{attempt} for {url}. err: {json.dumps(err, default=str)}")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(base_delay * (attempt + 2) ** 2)
 
     exclude_anthology_class_section_ids = get_exclude_anthology_class_section_ids(
         exclude_anthology_course_codes, anthology_api_key, anthology_base_url
@@ -118,26 +124,28 @@ def get_exclude_anthology_class_section_ids(
     url = f"{anthology_base_url}/ds/campusnexus/ClassSections"
     headers = {"ApiKey": anthology_api_key}
 
-    transport = httpx.HTTPTransport(retries=3)
-    with httpx.Client(transport=transport) as client:
-        response = client.get(url=url, headers=headers, timeout=30.0)
-        logging.info(
-            f"Status code for /ds/campusnexus/ClassSections was {response.status_code}. response.text: {response.text}"
-        )
-    response.raise_for_status()
-    results = response.json()
+    max_retries = 3
+    base_delay = 2
+    with httpx.Client() as client:
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.get(url=url, headers=headers, timeout=30.0)
+                response.raise_for_status()
+                results = response.json()
+                list_of_courses = results["value"]
+                break
+            except Exception as err:
+                logging.info(f"Errored on attempt #{attempt + 1} for {url}. err: {json.dumps(err, default=str)}")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(base_delay * (attempt + 2) ** 2)
 
-    list_of_courses = results["value"]
     set_of_exclude_anthology_course_codes = set(exclude_anthology_course_codes)
     logging.info(
         f"Excluding the following Anthology classSectionIds: {json.dumps(list(set_of_exclude_anthology_course_codes))}"
     )
 
-    return {
-        course["Id"]
-        for course in list_of_courses
-        if course["CourseCode"] in set_of_exclude_anthology_course_codes
-    }
+    return {course["Id"] for course in list_of_courses if course["CourseCode"] in set_of_exclude_anthology_course_codes}
 
 
 def get_enrollment_activation_date(
@@ -170,9 +178,7 @@ def get_enrollment_activation_date(
         )
 
     logging.info(f"all_course_meeting_dates: {all_course_meeting_dates}")
-    logging.info(
-        f"courses_with_missing_attendance_data: {courses_with_missing_attendance_data}"
-    )
+    logging.info(f"courses_with_missing_attendance_data: {courses_with_missing_attendance_data}")
 
     if not all_course_meeting_dates:
         return "", courses_with_missing_attendance_data
@@ -198,16 +204,21 @@ def get_attendance_dates(
     url = f"{anthology_base_url}/ds/campusnexus/Attendance/CampusNexus.GetStudentAttendanceClassDetailList(studentCourseId={course_ids['studentCourseId']},classSectionId={course_ids['classSectionId']},startDate='1900-01-01',endDate='{end_date}')"
     headers = {"ApiKey": anthology_api_key}
 
-    transport = httpx.HTTPTransport(retries=3)
-    with httpx.Client(transport=transport) as client:
-        response = client.get(url=url, headers=headers, timeout=30.0)
-        logging.info(
-            f"Status code of /ds/campusnexus/Attendance/CampusNexus.GetStudentAttendanceClassDetailList was {response.status_code}. response.text: {response.text}"
-        )
-
-    response.raise_for_status()
-    results = response.json()
-    course_meetings = results.get("value", [])
+    max_retries = 3
+    base_delay = 2
+    with httpx.Client() as client:
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.get(url=url, headers=headers, timeout=30.0)
+                response.raise_for_status()
+                results = response.json()
+                course_meetings = results.get("value", [])
+                break
+            except Exception as err:
+                logging.info(f"Errored on attempt #{attempt + 1} for {url}. err: {json.dumps(err, default=str)}")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(base_delay * (attempt + 2) ** 2)
 
     # for dropped classes, only consider attendance dates that are before the drop date
     if course_ids["drop_date"]:
@@ -224,17 +235,13 @@ def get_attendance_dates(
         course_meeting_dates = [
             meeting["AttendanceDate"]
             for meeting in course_meetings
-            if (meeting["Attended"] == None or meeting["Attended"] > 0)
-            and meeting["Status"] != "C"
+            if (meeting["Attended"] == None or meeting["Attended"] > 0) and meeting["Status"] != "C"
         ]
 
     # check if the course has any missing attendance data with a date earlier than the earliest participation date
     has_missing_attendance_data = False
     for meeting in course_meetings:
-        if (
-            meeting["AttendanceDate"][:10] < earliest_participation_date[:10]
-            and meeting["Attended"] == None
-        ):
+        if meeting["AttendanceDate"][:10] < earliest_participation_date[:10] and meeting["Attended"] == None:
             has_missing_attendance_data = True
 
     return course_meeting_dates, has_missing_attendance_data

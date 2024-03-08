@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import logging
 import httpx
+import time
 
 
 def get_anthology(anthology_base_url, studentEnrollmentPeriodId, anthology_api_key):
@@ -9,15 +10,20 @@ def get_anthology(anthology_base_url, studentEnrollmentPeriodId, anthology_api_k
     body = {"payload": {"Id": studentEnrollmentPeriodId}}
     headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
 
-    transport = httpx.HTTPTransport(retries=3)
-    with httpx.Client(transport=transport) as client:
-        response = client.post(
-            url=url, data=json.dumps(body), headers=headers, timeout=30.0
-        )
-        logging.info(f"Status code of GET: {json.dumps(response.status_code)}")
-
-    response.raise_for_status()
-    result = response.json()
+    max_retries = 3
+    base_delay = 2
+    with httpx.Client() as client:
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.post(url=url, data=json.dumps(body), headers=headers, timeout=30.0)
+                response.raise_for_status()
+                result = response.json()
+                break
+            except Exception as err:
+                logging.exception(f"Errored on attempt #{attempt + 1} for {url}. err: {json.dumps(err, default=str)}")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(base_delay * (attempt + 2) ** 2)
 
     return result
 
@@ -125,9 +131,7 @@ def modify_anthology_payload(result, must_update_student_status, earliest):
             del result[item]
 
     # note: here's where the enrollment status codes come into play
-    logging.info(
-        f'result["payload"]["entity"]["schoolStatusId"]: {result["payload"]["entity"]["schoolStatusId"]}'
-    )
+    logging.info(f'result["payload"]["entity"]["schoolStatusId"]: {result["payload"]["entity"]["schoolStatusId"]}')
 
     if must_update_student_status:
         result["payload"]["entity"]["schoolStatusId"] = 13
@@ -153,9 +157,7 @@ def get_actual_start_date(result: dict, earliest: str) -> str:
         if property["name"] == "First Date of Student Participation":
             FDP = property["value"]
 
-    logging.info(
-        f"Within get_actual_start_date(), FDP was {FDP}, and earliest was {earliest}."
-    )
+    logging.info(f"Within get_actual_start_date(), FDP was {FDP}, and earliest was {earliest}.")
 
     # returning formatted_earliest if FDP is null
     if not FDP:
@@ -171,15 +173,19 @@ def post_anthology(anthology_base_url, body, anthology_api_key):
     url = f"{anthology_base_url}/api/commands/Academics/StudentEnrollmentPeriod/UpdateStudentEnrollmentPeriod"
     headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
 
-    transport = httpx.HTTPTransport(retries=3)
-    with httpx.Client(transport=transport) as client:
-        response = client.post(
-            url=url, headers=headers, data=json.dumps(body), timeout=30.0
-        )
-        logging.info(
-            f"For the post_anthology() API, the status code was {response.status_code}. response.text: {json.dumps(response.text, default=str)}"
-        )
-    response.raise_for_status()
+    max_retries = 3
+    base_delay = 2
+    with httpx.Client() as client:
+        for attempt in range(max_retries + 1):
+            try:
+                response = client.post(url=url, headers=headers, data=json.dumps(body), timeout=30.0)
+                response.raise_for_status()
+                break
+            except Exception as err:
+                logging.exception(f"Errored on attempt #{attempt + 1} for {url}. err: {json.dumps(err, default=str)}")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(base_delay * (attempt + 2) ** 2)
 
     return None
 
@@ -195,12 +201,8 @@ def generate_function_response(
     course_status_change_logs: list[dict],
     courses_with_missing_attendance_data: list[int],
 ) -> dict:
-    new_FDP = (
-        f"Changed to {update_FDP}" if update_FDP else "No changes made to this field"
-    )
-    new_LDP = (
-        f"Changed to {update_LDP}" if update_LDP else "No changes made to this field"
-    )
+    new_FDP = f"Changed to {update_FDP}" if update_FDP else "No changes made to this field"
+    new_LDP = f"Changed to {update_LDP}" if update_LDP else "No changes made to this field"
 
     return {
         "studentEnrollmentPeriodId": studentEnrollmentPeriodId,
@@ -210,9 +212,7 @@ def generate_function_response(
         "earliest_participation_date": earliest_participation_date,
         "Updated student statuses": must_update_student_status,
         "error_flag_participation_but_no_registered_courses": (
-            True
-            if "error_flag_participation_but_no_registered_courses" in error_flags
-            else False
+            True if "error_flag_participation_but_no_registered_courses" in error_flags else False
         ),
         "error_flag_EAD_gt_earliest_participation": (
             True if "error_flag_EAD_gt_earliest_participation" in error_flags else False
