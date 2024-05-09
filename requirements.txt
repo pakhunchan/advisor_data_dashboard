@@ -6,3 +6,4 @@ azure-functions
 httpx
 pytz
 pymssql
+asyncio

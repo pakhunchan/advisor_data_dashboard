@@ -5,16 +5,7 @@ import traceback
 import pymssql
 import asyncio
 
-from get_and_submit_anthology import (
-    get_anthology,
-    get_earliest_participation_date,
-    update_request_body,
-    post_anthology,
-    generate_function_response,
-)
-from check_if_must_update_student_status import check_if_must_update_student_status
-from update_student_status import update_student_status
-from create_student_status_history_record import create_student_status_history_record
+
 from get_anthology_and_canvas_term_ids import (
     get_anthology_term_info,
     get_canvas_term_id,
@@ -24,26 +15,30 @@ from get_students import (
     get_students,
     get_student_ids_for_single_vs_multiple_enrollments,
 )
-from get_student_number import main
+
+from get_student_number_email_first_last_name import get_student_data_asynchronously
+from get_canvas_student_id import (
+    get_canvas_student_ids_from_database,
+    get_canvas_student_ids_asynchronously,
+    insert_student_ids_into_database,
+)
+from get_students_courses import get_all_students_courses
+from get_students_academic_advisor import get_all_staff_ids, get_advisors_info
+
+
+# from get_student_number import main
 from get_courses import (
     get_canvas_courses,
     get_zero_credit_anthology_courses,
     get_exclude_canvas_course_ids,
 )
-from get_submissions import (
-    get_submissions,
-    add_submission,
-    make_student_id_dict,
-    should_not_skip,
-    get_student_enrollment_id,
-)
-from aggregate_submissions import (
-    create_flattened_canvas_dataset,
-    convert_canvas_course_ids_to_anthology_course_ids,
-    calculate_participation_for_each_student,
-    convert_from_utc_to_eastern,
-)
-from update_course_status import update_course_statuses
+
+from get_canvas_course_name import get_canvas_course_name_asynchronously
+
+from get_course_score_grade_link import get_canvas_enrollments_in_bulk_asynchronously, get_canvas_enrollments
+
+from get_attendance_data import get_anthology_attendance_data
+
 
 app = func.FunctionApp()
 
@@ -129,482 +124,432 @@ def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(traceback.format_exc(), status_code=400)
 
 
-#####################################
-# Scope1 -Part3 - Get Student Number
-#####################################
+################################################################
+# Scope1 -Part3 - Get Student Number, Email, First + Last Names
+################################################################
 
 
-@app.function_name(name="GetStudentNumberInBulk")
+@app.function_name(name="GetStudentNumberEmailFirstLastNames")
 @app.route(route="", auth_level=func.AuthLevel.FUNCTION)
 def get_student_number_in_bulk(req: func.HttpRequest) -> func.HttpResponse:
     try:
         request = req.get_json()
-        database_connector = request["database_connector"]
-        students = request["students"]
-        student_ids = tuple(int(student["studentId"]) for student in students)
-
         anthology_api_key = request.pop("anthology_api_key")
+        logging.info(f"request: {json.dumps(request, default=str)}")
+        students = request["students"]
         anthology_base_url = request["anthology_base_url"]
 
-        # get student numbers from database in bulk
-        with pymssql.connect(**database_connector) as conn:
-            with conn.cursor(as_dict=True) as cursor:
-                cursor.execute(
-                    "SELECT studentId, studentNumber from student_info_dimensions WHERE studentId IN %s",
-                    (student_ids,),
-                )
-                student_id_to_num_dict = {row["studentId"]: row["studentNumber"] for row in cursor}
+        # Use asyncio + httpx to retrieve student_number, first_name, last_name, email through a faster asynchronous approach
+        student_data = asyncio.run(get_student_data_asynchronously(anthology_api_key, anthology_base_url, students))
 
-        # start creating final results with the available data
-        updated_student_info = asyncio.run(
-            main(anthology_api_key, anthology_base_url, students, student_id_to_num_dict)
+        # return the student data
+        return func.HttpResponse(json.dumps({"students": student_data}), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
+##################################################
+# Scope1 -Part4 - Get Canvas Student Id
+##################################################
+
+
+@app.function_name(name="GetCanvasStudentId")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_canvas_student_id(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        canvas_bearer_token = request.pop("canvas_bearer_token")
+        logging.info(f"request: {json.dumps(request, default=str)}")
+        canvas_base_url = request["canvas_base_url"]
+        database_connector = request["database_connector"]
+        students = request["students"]
+
+        anthology_student_numbers = {student["anthology_student_number"] for student in students}
+
+        # first, get canvas_student_ids from database if the data is present
+        student_ids_from_database = get_canvas_student_ids_from_database(
+            tuple(anthology_student_numbers), database_connector
         )
+        logging.info(f"student_ids_from_database: {student_ids_from_database}")
 
-        # remove the "is_from_db" flag and collect list of studentIds that need to be
-        student_numbers_not_in_database = list(
+        anthology_student_numbers_from_database = set(student_ids_from_database.keys())
+
+        # second, get canvas_student_ids from Canvas API if not present in the database
+        student_ids_to_retrieve_from_api = list(anthology_student_numbers - anthology_student_numbers_from_database)
+        logging.info(f"student_ids_to_retrieve_from_api: {student_ids_to_retrieve_from_api}")
+
+        student_ids_from_api = asyncio.run(
+            get_canvas_student_ids_asynchronously(
+                canvas_bearer_token, canvas_base_url, student_ids_to_retrieve_from_api
+            )
+        )
+        logging.info(f"student_ids_from_api: {student_ids_from_api}")
+
+        # third, insert the Canvas API data into the database
+        if student_ids_from_api:
+            insert_student_ids_into_database(student_ids_from_api, database_connector)
+
+        # combine the database + API data
+        full_student_ids_dict = {**student_ids_from_database, **student_ids_from_api}
+        logging.info(f"full_student_ids_dict: {full_student_ids_dict}")
+
+        # generate the final results, with the canvas_student_id field added
+        modified_students_data = [
             {
-                (int(student["studentId"]), student["studentNumber"])
-                for student in updated_student_info
-                if not student.pop("is_from_db")
+                **student,
+                "canvas_student_id": full_student_ids_dict.get(student["anthology_student_number"], None),
             }
+            for student in students
+        ]
+
+        return func.HttpResponse(json.dumps({"students": modified_students_data}, default=str), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
+
+
+###########################################################
+# Scope1 - Part4 - Get Student Courses And Enrollment Ids
+###########################################################
+
+
+@app.function_name(name="GetSisCourseIdsEnrollmentId")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_sis_course_ids_enrollment_id(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request.pop("anthology_api_key")
+        ## logging.info(f"request: {json.dumps(request)}")
+        anthology_base_url = request["anthology_base_url"]
+        term_id = request["term_id"]
+        students = request["students"]
+        # exclude_anthology_course_codes = set(request["exclude_anthology_course_codes"])
+
+        # convert the `students` list[dict] into a dict
+        student_info_dict = {
+            int(student["anthology_student_id"]): {
+                "anthology_student_number": student["anthology_student_number"],
+                "first_name": student["first_name"],
+                "last_name": student["last_name"],
+                "email": student["email"],
+                "canvas_student_id": student["canvas_student_id"],
+            }
+            for student in students
+        }
+
+        # get all student courses from Anthology for the current term
+        student_courses = get_all_students_courses(anthology_api_key, anthology_base_url, term_id)
+
+        # for student_courses that match a student in the student_info_dict, add fields and append the data into modified_students_data
+        student_courses_data = []
+        for student_course in student_courses:
+            # skip if the student_id isn't in our working list
+            if student_course["StudentId"] not in student_info_dict:
+                continue
+
+            # else, process the data
+            student_info = {
+                "anthology_student_id": student_course["StudentId"],
+                **student_info_dict[student_course["StudentId"]],
+                "sis_course_id": f'AdClassSched_{student_course["ClassSectionId"]}',
+                "class_section_id": student_course["ClassSectionId"],
+                "student_enrollment_period_id": student_course["StudentEnrollmentPeriodId"],
+                "anthology_student_course_id": student_course["Id"],
+            }
+
+            student_courses_data.append(student_info)
+
+        logging.info(f"student_courses_data: {student_courses_data}")
+
+        return func.HttpResponse(json.dumps({"student_courses": student_courses_data}, default=str), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
+##################################################
+# Scope1 -Part5 - Get Student's Academic Advisor
+##################################################
+
+
+@app.function_name(name="GetStudentsAcademicAdvisor")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_students_academic_advisor(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request.pop("anthology_api_key")
+        logging.info(f"request: {json.dumps(request, default=str)}")
+        student_courses = request["student_courses"]
+        anthology_base_url = request["anthology_base_url"]
+
+        # first, get all staff data
+        staff_id_dict = get_all_staff_ids(anthology_api_key, anthology_base_url)
+
+        # next, get each student's academic advisor
+        advisors_dict = get_advisors_info(anthology_api_key, anthology_base_url, staff_id_dict)
+
+        # finally, format the data
+        modified_student_courses_data = []
+        for student in student_courses:
+            student_info = {
+                **student,
+                "advisor_name": advisors_dict.get(student["student_enrollment_period_id"], None),
+            }
+
+            modified_student_courses_data.append(student_info)
+
+        return func.HttpResponse(json.dumps({"student_courses": modified_student_courses_data}), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
+###############################################
+# Scope1 - Part6 - Get Canvas Course Name
+###############################################
+
+
+@app.function_name(name="GetCanvasCourseName")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_canvas_course_name(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        canvas_bearer_token = request.pop("canvas_bearer_token")
+        # logging.info(f"request: {json.dumps(request)}")
+        canvas_base_url = request["canvas_base_url"]
+        student_courses = request["student_courses"]
+
+        sis_course_id_list = list({course["sis_course_id"] for course in student_courses})
+        logging.info(f"sis_course_id_list: {sis_course_id_list}")
+
+        course_id_mappings = asyncio.run(
+            get_canvas_course_name_asynchronously(canvas_bearer_token, canvas_base_url, sis_course_id_list)
         )
+        logging.info(f"course_id_mappings: {course_id_mappings}")
+
+        modified_student_courses_data = [
+            {
+                **course,
+                "course_name": course_id_mappings[course["sis_course_id"]]["canvas_course_name"],
+                "canvas_course_id": course_id_mappings[course["sis_course_id"]]["canvas_course_id"],
+                # canvas_grade_link = {canvas_base_url}/courses/{canvas_course_id}/grades/{canvas_student_id}
+                "canvas_grade_link": (
+                    f'{canvas_base_url}/courses/{course_id_mappings[course["sis_course_id"]]["canvas_course_id"]}/grades/{course["canvas_student_id"]}'
+                    if (course_id_mappings[course["sis_course_id"]]["canvas_course_id"] and course["canvas_student_id"])
+                    else None
+                ),
+            }
+            for course in student_courses
+        ]
+        logging.info(f"modified_student_courses_data: {modified_student_courses_data}")
+
+        return func.HttpResponse(
+            json.dumps({"student_courses": modified_student_courses_data}, indent=2),
+            status_code=200,
+        )
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
+
+
+###############################################
+# Scope2 - Part1a - Get Course Score Grade Link
+###############################################
+
+
+@app.function_name(name="GetCourseScoreGradeLink")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_course_score_grade_link(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        canvas_bearer_token = request.pop("canvas_bearer_token")
+        # logging.info(f"request: {json.dumps(request)}")
+        canvas_base_url = request["canvas_base_url"]
+        student_courses = request["student_courses"]
+        database_connector = request["database_connector"]
+
+        # first, generate course_dict to filter Canvas enrollments later
+        student_course_dict = {}
+        for course in student_courses:
+            student_number = course["anthology_student_number"]
+            course_id = course["sis_course_id"]
+            student_course_dict[student_number] = student_course_dict.get(student_number, []) + [course_id]
+        logging.info(f"student_course_dict: {json.dumps(student_course_dict, default=str)}")
+
+        # second, query Canvas API
+        list_of_canvas_enrollment_data = asyncio.run(
+            get_canvas_enrollments_in_bulk_asynchronously(canvas_bearer_token, canvas_base_url, student_course_dict)
+        )
+        logging.info(f"list_of_canvas_enrollment_data: {list_of_canvas_enrollment_data}")
+
+        # third, merge the Canvas data into our current data
+        dict_of_canvas_enrollment_data = {
+            anthology_student_number: course_data
+            for enrollment_data in list_of_canvas_enrollment_data
+            for anthology_student_number, course_data in enrollment_data.items()
+        }
+        logging.info(f"dict_of_canvas_enrollment_data: {json.dumps(dict_of_canvas_enrollment_data, default=str)}")
+
+        modified_student_courses_data = []
+        for course in student_courses:
+            # this should only happen in test Canvas
+            if not course["course_name"]:
+                continue
+
+            anthology_student_number = course["anthology_student_number"]
+            sis_course_id = course["sis_course_id"]
+
+            modified_student_courses_data.append(
+                {
+                    **course,
+                    **dict_of_canvas_enrollment_data[anthology_student_number][sis_course_id],
+                }
+            )
+
+        # fourth, add data into staging tables
+        import pymssql
+
+        sql_statement_merge_insert_staging_student_course_performance = """
+            MERGE INTO staging_student_course_performance AS target 
+            USING (VALUES (%(anthology_student_id)d, %(course_name)s, %(current_score)d, %(current_grade)s, %(canvas_grade_link)s, %(class_section_id)d)) AS SOURCE (anthology_student_id, course_name, current_score, current_grade, canvas_grade_link, class_section_id)
+            ON 
+                target.anthology_student_id = SOURCE.anthology_student_id AND 
+                target.course_name = SOURCE.course_name
+            WHEN NOT MATCHED THEN 
+                INSERT (anthology_student_id, course_name, current_score, current_grade, canvas_grade_link, class_section_id)
+                VALUES (SOURCE.anthology_student_id, SOURCE.course_name, SOURCE.current_score, SOURCE.current_grade, SOURCE.canvas_grade_link, SOURCE.class_section_id);
+        """
+
+        sql_statement_merge_insert_staging_student_info = """
+            MERGE INTO staging_student_info AS target 
+            USING (VALUES (%(anthology_student_id)d, %(anthology_student_number)d, %(canvas_student_id)d, %(first_name)s, %(last_name)s, %(email)s, %(advisor_name)s)) AS SOURCE (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
+            ON 
+                target.anthology_student_id = SOURCE.anthology_student_id 
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.anthology_student_number = SOURCE.anthology_student_number, 
+                    target.canvas_student_id = SOURCE.canvas_student_id, 
+                    target.first_name = SOURCE.first_name, 
+                    target.last_name = SOURCE.last_name, 
+                    target.email = SOURCE.email, 
+                    target.advisor_name = SOURCE.advisor_name
+            WHEN NOT MATCHED THEN 
+                INSERT (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
+                VALUES (SOURCE.anthology_student_id, SOURCE.anthology_student_number, SOURCE.canvas_student_id, SOURCE.first_name, SOURCE.last_name, SOURCE.email, SOURCE.advisor_name);
+        """
 
         with pymssql.connect(**database_connector) as conn:
             with conn.cursor(as_dict=True) as cursor:
+                # insert student_course_performance data into the staging table
                 cursor.executemany(
-                    "INSERT INTO student_info_dimensions VALUES (%d, %d)",
-                    student_numbers_not_in_database,
+                    sql_statement_merge_insert_staging_student_course_performance,
+                    modified_student_courses_data,
                 )
-                rows_affected = cursor.rowcount
+
+                cursor.executemany(
+                    sql_statement_merge_insert_staging_student_info,
+                    modified_student_courses_data,
+                )
+
                 conn.commit()
 
         return func.HttpResponse(
-            json.dumps(
-                {
-                    "rows_affected": rows_affected,
-                    "students": updated_student_info,
-                },
-                default=str,
-            ),
+            json.dumps({"student_courses": modified_student_courses_data}, indent=2),
             status_code=200,
         )
 
     except Exception as err:
         logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
 
 
-##################################
-# Scope2 -- Get List of Courses
-##################################
+########################################
+# Scope2 - Part1b - Get Attendance Data
+########################################
 
 
-@app.function_name(name="GetListOfCourses")
+@app.function_name(name="GetAttendanceData")
 @app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_list_of_courses(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        # retrieving payload + initializing variables
-        request = req.get_json()
-        # anthology_api_key = request.pop("anthology_api_key")
-        canvas_bearer_token = request.pop("canvas_bearer_token")
-        logging.info(f"request: {json.dumps(request)}")
-        # anthology_base_url = request["anthology_base_url"]
-        canvas_base_url = request["canvas_base_url"]
-        term_id = int(request["term_id"])
-        exclude_anthology_course_codes = set(request["exclude_anthology_course_codes"])
-
-        list_of_courses = get_canvas_courses(canvas_bearer_token, canvas_base_url, term_id)
-        logging.info(f"list_of_courses: {json.dumps(list_of_courses, default=str)}")
-
-        modified_list_of_courses = [
-            course for course in list_of_courses if course["course_code"] not in exclude_anthology_course_codes
-        ]
-        logging.info(
-            f"modified_list_of_courses (after excluding courses): {json.dumps(modified_list_of_courses, default=str)}"
-        )
-
-        canvas_course_ids = [course["id"] for course in modified_list_of_courses]
-        logging.info(f"canvas_course_id: {json.dumps(canvas_course_ids, default=str)}")
-
-        list_of_canvas_and_anthology_course_ids = [
-            {
-                "canvas_course_id": course["id"],
-                "anthology_course_id": int(course["sis_course_id"].lstrip("AdClassSched_")),
-                "course_code": course["course_code"],
-            }
-            for course in modified_list_of_courses
-        ]
-        logging.info(
-            f"list_of_canvas_and_anthology_course_ids: {json.dumps(list_of_canvas_and_anthology_course_ids, default=str)}"
-        )
-
-        return func.HttpResponse(
-            json.dumps(
-                {
-                    "canvas_course_ids": canvas_course_ids,
-                    "list_of_canvas_and_anthology_course_ids": list_of_canvas_and_anthology_course_ids,
-                },
-                default=str,
-            ),
-            status_code=200,
-        )
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-#########################################
-# Scope3 Part1 -- Get Canvas Submissions
-#########################################
-
-
-@app.function_name(name="GetSubmissions")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_submissions_function(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        # retrieve incoming request payload
-        request = req.get_json()
-        canvas_bearer_token = request.pop("canvas_bearer_token")
-        student_payload = request.pop("student_payload")
-        logging.info(f"request without canvas_bearer_token and student_payload shown: {request}")
-
-        # initialize variables
-        canvas_base_url = request["canvas_base_url"]
-        course_id = request["course_id"]
-        submitted_since = request["lastSuccessTimestamp"]
-        anthology_base_url = request["anthology_base_url"]
-        anthology_api_key = request["anthology_api_key"]
-        list_of_canvas_and_anthology_course_ids = request["list_of_canvas_and_anthology_course_ids"]
-
-        canvas_to_anthology_course_id_dict = {
-            course["canvas_course_id"]: course["anthology_course_id"]
-            for course in list_of_canvas_and_anthology_course_ids
-        }
-
-        submission_results = get_submissions(canvas_base_url, canvas_bearer_token, course_id, submitted_since)
-        logging.info(f"submission_results: {json.dumps(submission_results, default=str)}")
-
-        # Canvas' API response includes studentNumber but not studentEnrollmentPeriodId
-        # Anthology's API request body requires studentEnrollmentPeriodId
-
-        # need a dictionary of studentNumber:studentEnrollmentPeriodId. For k:v pair, set v as a str(int) if 1 value per key, but set v as a list of str(int)s if many values per key
-        student_id_dict = make_student_id_dict(student_payload)
-        logging.info(f"student_id_dict: {json.dumps(student_id_dict)}")
-
-        # iterate through each submission and update canvas_student_participation
-        canvas_student_participation_dict = {}
-        for student in submission_results:
-            for submission in student["submissions"]:
-                # only updating canvas_student_participation when the student is also in the student_payload/student_id_dict
-                if should_not_skip(submission, student, student_id_dict):
-                    add_submission(
-                        canvas_student_participation_dict=canvas_student_participation_dict,
-                        studentNumber=student["sis_user_id"],
-                        submitted_at=submission["submitted_at"],
-                        course_id=course_id,
-                    )
-
-        logging.info(f"canvas_student_participation_dict: {json.dumps(canvas_student_participation_dict, default=str)}")
-
-        # convert to a more readable JSON format
-        canvas_student_participation = [
-            {
-                "studentNumber": k,
-                "studentEnrollmentPeriodId": (
-                    student_id_dict[k]["studentEnrollmentPeriodId"]
-                    if isinstance(student_id_dict[k]["studentEnrollmentPeriodId"], str)
-                    else get_student_enrollment_id(
-                        anthology_base_url=anthology_base_url,
-                        anthology_api_key=anthology_api_key,
-                        studentId=student_id_dict[k]["studentId"],
-                        anthology_course_id=canvas_to_anthology_course_id_dict[v["canvas_course_id"]],
-                    )
-                ),
-                **v,
-            }
-            for k, v in canvas_student_participation_dict.items()
-        ]
-
-        logging.info(f"canvas_student_participation: {json.dumps(canvas_student_participation, default=str)}")
-
-        return func.HttpResponse(
-            json.dumps(canvas_student_participation, default=str),
-            status_code=200,
-        )
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-#############################################
-# Scope3 Part2 -- Aggregate Submissions Data
-#############################################
-
-
-@app.function_name(name="AggregateCanvasSubmissions")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def aggregate_canvas_submissions(req: func.HttpRequest) -> func.HttpResponse:
+def get_attendance_data(req: func.HttpRequest) -> func.HttpResponse:
     try:
         request = req.get_json()
-        logging.info(f"request: {json.dumps(request)}")
-
-        student_payload = request["student_payload"]
-        submission_data = request["submission_data"]
-        list_of_canvas_and_anthology_course_ids = request["list_of_canvas_and_anthology_course_ids"]
-        anthology_base_url = request["anthology_base_url"]
-
-        # logging student_payload and submission_data separately since they are long and get cut off in the logs
-        logging.info(f"student_payload of request: {json.dumps(student_payload, default=str)}")
-        logging.info(f"submission data of request: {json.dumps(submission_data, default=str)}")
-
-        combined_submission_data_with_canvas_ids = create_flattened_canvas_dataset(submission_data)
-        combined_submission_data_with_anthology_ids = convert_canvas_course_ids_to_anthology_course_ids(
-            combined_submission_data_with_canvas_ids,
-            list_of_canvas_and_anthology_course_ids,
-        )
-        canvas_student_participation_utc = calculate_participation_for_each_student(
-            combined_submission_data_with_anthology_ids,
-            student_payload,
-            anthology_base_url,
-        )
-        canvas_student_participation_eastern = convert_from_utc_to_eastern(canvas_student_participation_utc)
-
-        return func.HttpResponse(
-            json.dumps(
-                {"aggregated_student_submissions": canvas_student_participation_eastern},
-                default=str,
-            ),
-            status_code=200,
-        )
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-###########################################
-# Scope4 Part1 -- Get and Update Anthology
-###########################################
-
-
-@app.function_name(name="GetAndUpdateAnthology")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_and_update_anthology(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        request = req.get_json()
-        if not isinstance(request, dict):
-            request = json.loads(request)
         anthology_api_key = request.pop("anthology_api_key")
-        logging.info(f"request: {json.dumps(request)}")
-
+        # canvas_bearer_token = request.pop("canvas_bearer_token")
+        # logging.info(f"request: {json.dumps(request)}")
         anthology_base_url = request["anthology_base_url"]
-        studentEnrollmentPeriodId = request["student"]["studentEnrollmentPeriodId"]
-        studentId = request["student"]["studentId"]
-        earliest = request["student"]["earliest"]
-        latest = request["student"]["latest"]
-        anthology_course_ids = request["student"]["anthology_course_ids"]
-        end_date = request["end_date"]
-        exclude_anthology_course_codes = request["exclude_anthology_course_codes"]
-        promotable_enrollment_status_ids = set(request["promotable_enrollment_status_ids"])
+        # canvas_base_url = request["canvas_base_url"]
+        four_months_prior_date = request["four_months_prior_date"]
+        database_connector = request["database_connector"]
+        student_courses = request["student_courses"]
 
-        result = get_anthology(anthology_base_url, studentEnrollmentPeriodId, anthology_api_key)
-        logging.info(
-            f'result["payload"]["data"]["schoolStatusId"] == 13: {result["payload"]["data"]["schoolStatusId"] == 13}'
+        # first, get list of student course ids
+        # student_course_id_set = {course["anthology_student_course_id"] for course in student_courses}
+        student_course_id_dict = {
+            course["anthology_student_course_id"]: {
+                "anthology_student_id": course["anthology_student_id"],
+                "course_name": course["course_name"],
+                "class_section_id": course["class_section_id"],
+            }
+            for course in student_courses
+        }
+        logging.info(f"student_course_id_dict: {student_course_id_dict}")
+
+        list_of_attendance_data = get_anthology_attendance_data(
+            anthology_api_key, anthology_base_url, four_months_prior_date
         )
-        is_enrolled_student = result["payload"]["data"]["schoolStatusId"] == 13
+        logging.info(f"len(list_of_attendance_data): {len(list_of_attendance_data)}")
 
-        earliest_participation_date = get_earliest_participation_date(result, earliest)
+        student_attendance_data = [
+            {
+                "attendance_date": attendance["AttendanceDate"],
+                "attended_minutes": attendance["Attended"],
+                "absent_minutes": attendance["Absent"],
+                "is_excused_absence": 1 if attendance["IsExcusedAbsence"] else 0,
+                **student_course_id_dict[attendance["StudentCourseId"]],
+            }
+            for attendance in list_of_attendance_data
+            if attendance["StudentCourseId"] in student_course_id_dict
+        ]
 
-        (
-            must_update_student_status,
-            EAD,
-            error_flags,
-            courses_with_missing_attendance_data,
-        ) = check_if_must_update_student_status(
-            result,
-            earliest,
-            end_date,
-            exclude_anthology_course_codes,
-            anthology_api_key,
-            anthology_base_url,
-            studentId,
-            studentEnrollmentPeriodId,
-            promotable_enrollment_status_ids,
-            earliest_participation_date,
-            error_flags=set(),
-        )
-        logging.info(f"must_update_student_status: {must_update_student_status}")
-        logging.info(f"error_flags: {error_flags}")
+        logging.info(f"student_attendance_data: {student_attendance_data}")
 
-        result, update_FDP, update_LDP = update_request_body(result, earliest, latest, must_update_student_status)
+        # add data into staging tables
+        import pymssql
 
-        # return func.HttpResponse("Finished testing. Stopping before we update the Anthology records.", status_code=200)
-        course_status_change_logs = None
+        sql_statement_merge_insert_staging_student_course_attendance = """
+            MERGE INTO staging_student_course_attendance AS target 
+            USING (VALUES (%(anthology_student_id)d, %(course_name)s, %(attendance_date)s, %(attended_minutes)d, %(absent_minutes)d, %(is_excused_absence)d, %(class_section_id)d)) AS SOURCE (anthology_student_id, course_name, attendance_date, attended_minutes, absent_minutes, is_excused_absence, class_section_id)
+            ON 
+                target.anthology_student_id = SOURCE.anthology_student_id AND 
+                target.course_name = SOURCE.course_name AND
+                target.attendance_date = SOURCE.attendance_date
+            WHEN NOT MATCHED THEN 
+                INSERT (anthology_student_id, course_name, attendance_date, attended_minutes, absent_minutes, is_excused_absence, class_section_id)
+                VALUES (SOURCE.anthology_student_id, SOURCE.course_name, SOURCE.attendance_date, SOURCE.attended_minutes, SOURCE.absent_minutes, SOURCE.is_excused_absence, SOURCE.class_section_id);
+        """
 
-        if update_FDP or update_LDP:
-            (
-                update_student_status(anthology_api_key, anthology_base_url, studentId)
-                if must_update_student_status
-                else None
-            )
-            post_anthology(anthology_base_url, result, anthology_api_key)
-            (
-                create_student_status_history_record(
-                    anthology_api_key,
-                    anthology_base_url,
-                    studentId,
-                    studentEnrollmentPeriodId,
-                    earliest_participation_date,
+        with pymssql.connect(**database_connector) as conn:
+            with conn.cursor(as_dict=True) as cursor:
+                # insert student_course_performance data into the staging table
+
+                cursor.executemany(
+                    sql_statement_merge_insert_staging_student_course_attendance,
+                    student_attendance_data,
                 )
-                if must_update_student_status
-                else None
-            )
-            course_status_change_logs = (
-                update_course_statuses(
-                    anthology_api_key,
-                    anthology_base_url,
-                    anthology_course_ids,
-                    studentEnrollmentPeriodId,
-                    studentId,
-                )
-                if must_update_student_status or is_enrolled_student
-                else None
-            )
 
-        function_response = generate_function_response(
-            studentEnrollmentPeriodId,
-            update_FDP,
-            update_LDP,
-            earliest_participation_date,
-            EAD,
-            must_update_student_status,
-            error_flags,
-            course_status_change_logs,
-            courses_with_missing_attendance_data,
-        )
-        logging.info(f"function response: {json.dumps(function_response)}")
+                conn.commit()
 
         return func.HttpResponse(
-            json.dumps(function_response, default=str),
+            json.dumps({"student_attendance_data": student_attendance_data}, indent=2),
             status_code=200,
         )
 
     except Exception as err:
         logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-###############################################################
-# Scope4 Part2a -- Prepare Email for No Registered Course Error
-###############################################################
-
-
-@app.function_name(name="GetDataForNoRegisteredCourseError")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_data_for_no_registered_course_error(req: func.HttpRequest) -> func.HttpResponse:
-    import httpx
-
-    try:
-        request = req.get_json()
-        canvas_bearer_token = request.pop("canvas_bearer_token")
-        logging.info(f"request: {json.dumps(request, default=str)}")
-        canvas_base_url = request["canvas_base_url"]
-        student = request["student"]
-        anthology_course_ids = student["anthology_course_ids"]
-        canvas_term_id = request["canvas_term_id"][0]
-
-        sis_course_ids = {f"AdClassSched_{course_id}" for course_id in anthology_course_ids}
-
-        url = f"{canvas_base_url}/api/v1/accounts/11/courses"
-        page = 1
-        headers = {"Authorization": f"Bearer {canvas_bearer_token}"}
-
-        list_of_courses = []
-
-        transport = httpx.HTTPTransport(retries=3)
-        with httpx.Client(transport=transport) as client:
-            while True:
-                params = {
-                    "per_page": 100,
-                    "page": page,
-                    "enrollment_term_id": canvas_term_id,
-                }
-                response = client.get(url=url, params=params, headers=headers)
-                results = response.json()
-                list_of_courses.extend(results)
-
-                if "next" not in response.headers.get("Link"):
-                    break
-                page += 1
-
-        courses_with_participation_data = [
-            f"ClassSectionId #{course['sis_course_id'].lstrip('AdClassSched_')} - {course['course_code']}"
-            for course in list_of_courses
-            if course["sis_course_id"] in sis_course_ids
-        ]
-
-        # formatting the final results
-        del student["anthology_course_ids"]
-        student_and_course_info = {
-            **request["student"],
-            "courses_with_participation_data": courses_with_participation_data,
-        }
-
-        return func.HttpResponse(json.dumps(student_and_course_info, default=str), status_code=200)
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-#############################################################
-# Scope4 Part2b -- Prepare Email for Missing Attendance Data Error
-#############################################################
-
-from get_data_for_missing_attendance_error import get_student_name, get_course_info
-
-
-@app.function_name(name="GetDataForMissingAttendanceError")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_data_for_missing_attendance_error(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        request = req.get_json()
-        canvas_bearer_token = request.pop("canvas_bearer_token")
-        anthology_api_key = request.pop("anthology_api_key")
-        logging.info(f"request: {json.dumps(request, default=str)}")
-        canvas_base_url = request["canvas_base_url"]
-        anthology_base_url = request["anthology_base_url"]
-        student = request["student"]
-        anthology_course_ids = student["anthology_course_ids"]
-        canvas_term_id = request["canvas_term_id"][0]
-
-        student_name = get_student_name(anthology_api_key, anthology_base_url, student["studentId"])
-        courses_with_missing_attendance_data = get_course_info(
-            canvas_bearer_token, canvas_base_url, canvas_term_id, anthology_course_ids
-        )
-
-        # formatting the final results
-        student_and_course_info = {
-            "studentName": student_name,
-            "studentNumber": student["studentNumber"],
-            "studentId": student["studentId"],
-            "studentEnrollmentPeriodId": student["studentEnrollmentPeriodId"],
-            "Anthology link": student["Anthology link"],
-            "Courses with missing attendance data": courses_with_missing_attendance_data,
-        }
-
-        # # formatting the final results
-        # del student["anthology_course_ids"]
-        # student_and_course_info = {
-        #     **request["student"],
-        #     "courses_with_missing_attendance_data": courses_with_missing_attendance_data,
-        #     "student_name": student_name,
-        # }
-
-        return func.HttpResponse(json.dumps(student_and_course_info, default=str), status_code=200)
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
