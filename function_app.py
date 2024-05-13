@@ -484,7 +484,7 @@ def get_attendance_data(req: func.HttpRequest) -> func.HttpResponse:
         # logging.info(f"request: {json.dumps(request)}")
         anthology_base_url = request["anthology_base_url"]
         # canvas_base_url = request["canvas_base_url"]
-        four_months_prior_date = request["four_months_prior_date"]
+        thirty_days_ago_datetime = request["thirty_days_ago_datetime"]
         database_connector = request["database_connector"]
         student_courses = request["student_courses"]
 
@@ -501,7 +501,7 @@ def get_attendance_data(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(f"student_course_id_dict: {student_course_id_dict}")
 
         list_of_attendance_data = get_anthology_attendance_data(
-            anthology_api_key, anthology_base_url, four_months_prior_date
+            anthology_api_key, anthology_base_url, thirty_days_ago_datetime
         )
         logging.info(f"len(list_of_attendance_data): {len(list_of_attendance_data)}")
 

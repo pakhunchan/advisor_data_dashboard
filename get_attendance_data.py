@@ -4,7 +4,7 @@ import logging
 
 
 def get_anthology_attendance_data(
-    anthology_api_key: str, anthology_base_url: str, four_months_prior_date: str
+    anthology_api_key: str, anthology_base_url: str, thirty_days_ago_datetime: str
 ) -> list[dict]:
 
     max_retries = 3
@@ -13,7 +13,7 @@ def get_anthology_attendance_data(
     url = f"{anthology_base_url}/ds/campusnexus/Attendance"
     headers = {"ApiKey": anthology_api_key}
     params = {
-        "$filter": f"AttendanceDate ge {four_months_prior_date}",
+        "$filter": f"AttendanceDate ge {thirty_days_ago_datetime}",
         "$select": "AttendanceDate, Attended, Absent, IsExcusedAbsence, StudentCourseId",
     }
 
