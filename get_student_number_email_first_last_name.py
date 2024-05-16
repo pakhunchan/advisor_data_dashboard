@@ -8,7 +8,7 @@ async def get_student_data(
     anthology_api_key: str, anthology_base_url: str, student: dict, client: httpx.AsyncClient
 ) -> dict:
 
-    student_id = student["studentId"]
+    student_id = student["anthology_student_id"]
     url = f"{anthology_base_url}/api/commands/Common/Student/get"
     headers = {"ApiKey": anthology_api_key, "Content-Type": "application/json"}
     body = {"payload": {"id": student_id}}
@@ -21,7 +21,7 @@ async def get_student_data(
             response = await client.post(url=url, headers=headers, data=json.dumps(body), timeout=15.0)
             response.raise_for_status()
             results = response.json()
-            logging.info(f"results: {results}")
+            # logging.info(f"results: {results}")
             break
         except Exception as err:
             logging.exception(err)
@@ -29,12 +29,16 @@ async def get_student_data(
                 raise
             await asyncio.sleep(base_delay * 2 ** (attempt))
 
+    student_api_data = (results.get("payload") or {}).get("data") or {}
+
     formatted_results = {
-        "anthology_student_id": int(body["payload"]["id"]),
-        "anthology_student_number": int(results["payload"]["data"]["studentNumber"]),
-        "first_name": results["payload"]["data"]["firstName"],
-        "last_name": results["payload"]["data"]["lastName"],
-        "email": results["payload"]["data"]["emailAddress"],
+        **student,
+        "anthology_student_number": (
+            int(student_api_data["studentNumber"]) if "studentNumber" in student_api_data else None
+        ),
+        "first_name": student_api_data.get("firstName", None),
+        "last_name": student_api_data.get("lastName", None),
+        "email": student_api_data.get("emailAddress", None),
     }
 
     return formatted_results

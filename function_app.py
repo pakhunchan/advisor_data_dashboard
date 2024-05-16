@@ -22,6 +22,9 @@ from get_canvas_student_id import (
     get_canvas_student_ids_asynchronously,
     insert_student_ids_into_database,
 )
+from get_aos_residency import get_aos_residency_api_data_asynchronously
+from get_prep_program import get_prep_program_dict
+from get_academic_graduation_hold_registration_hold import get_graduation_hold_registration_hold_asynchronously
 from get_students_courses import get_all_students_courses
 from get_students_academic_advisor import get_all_staff_ids, get_advisors_info
 
@@ -96,7 +99,6 @@ def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(json.dumps({"Request payload": request}, default=str))
 
         anthology_base_url = request["anthology_base_url"]
-        term_id = request["term_id"]
         school_status_codes = set(request["school_status_codes"])
         check_student_enrollment_ids = set(request.get("check_student_enrollment_ids") or {})
 
@@ -106,22 +108,69 @@ def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
         # get list of active students by filtering by school_status_ids
         students = get_students(school_status_ids, anthology_base_url, anthology_api_key)
 
-        student_ids_and_enrollment_ids_dict = get_student_ids_for_single_vs_multiple_enrollments(
-            students, check_student_enrollment_ids
-        )
-
-        student_ids_and_enrollment_ids = [
-            {"studentId": k, "studentEnrollmentPeriodId": v, "termId": term_id}
-            for k, v in student_ids_and_enrollment_ids_dict.items()
+        # format the students info data into a list[dicts]
+        students_info = [
+            {
+                "anthology_student_id": student.get("StudentId"),
+                "student_enrollment_period_id": student.get("Id"),
+                "program": student.get("ProgramVersionName"),
+                "location": (student.get("Campus") or {}).get("Name"),
+            }
+            for student in students
+            if not check_student_enrollment_ids or student.get("Id") in check_student_enrollment_ids
         ]
 
-        logging.info(f"student_ids_and_enrollment_ids: {json.dumps(student_ids_and_enrollment_ids, default=str)}")
-
-        return func.HttpResponse(json.dumps(student_ids_and_enrollment_ids, default=str), status_code=200)
+        return func.HttpResponse(
+            json.dumps({"students": students_info}, default=str),
+            status_code=200,
+        )
 
     except Exception as err:
         logging.exception(err)
         return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
+# ######################################
+# # Scope1 -Part2 - Get List of Students
+# ######################################
+
+
+# @app.function_name(name="GetListOfStudents")
+# @app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+# def get_list_of_students(req: func.HttpRequest) -> func.HttpResponse:
+#     try:
+#         # retrieve payload and initialize variables
+#         request = req.get_json()
+#         anthology_api_key = request.pop("anthology_api_key")
+#         logging.info(json.dumps({"Request payload": request}, default=str))
+
+#         anthology_base_url = request["anthology_base_url"]
+#         term_id = request["term_id"]
+#         school_status_codes = set(request["school_status_codes"])
+#         check_student_enrollment_ids = set(request.get("check_student_enrollment_ids") or {})
+
+#         # get school_status_ids of the active groups of students
+#         school_status_ids = get_school_status_ids(anthology_base_url, anthology_api_key, school_status_codes)
+
+#         # get list of active students by filtering by school_status_ids
+#         students = get_students(school_status_ids, anthology_base_url, anthology_api_key)
+
+#         student_ids_and_enrollment_ids_dict = get_student_ids_for_single_vs_multiple_enrollments(
+#             students, check_student_enrollment_ids
+#         )
+
+#         student_ids_and_enrollment_ids = [
+#             {"studentId": k, "studentEnrollmentPeriodId": v, "termId": term_id}
+#             for k, v in student_ids_and_enrollment_ids_dict.items()
+#         ]
+
+#         logging.info(f"student_ids_and_enrollment_ids: {json.dumps(student_ids_and_enrollment_ids, default=str)}")
+
+#         return func.HttpResponse(json.dumps(student_ids_and_enrollment_ids, default=str), status_code=200)
+
+#     except Exception as err:
+#         logging.exception(err)
+#         return func.HttpResponse(traceback.format_exc(), status_code=400)
 
 
 ################################################################
@@ -211,6 +260,97 @@ def get_canvas_student_id(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
 
 
+##########################################
+# Scope1 -Part4.4 - Get AOS and Residency
+##########################################
+
+
+@app.function_name(name="GetAOSResidency")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_aos_residency(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request["anthology_api_key"]
+        anthology_base_url = request["anthology_base_url"]
+        students = request["students"]
+
+        # gets the api data + updates the student dictionary with the AOS + residency info
+        modified_students = asyncio.run(
+            get_aos_residency_api_data_asynchronously(anthology_api_key, anthology_base_url, students)
+        )
+
+        return func.HttpResponse(json.dumps({"students": modified_students}), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
+
+
+#####################################
+# Scope1 -Part4.5 - Get Prep Program
+#####################################
+
+
+@app.function_name(name="GetPrepProgram")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_prep_program(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request["anthology_api_key"]
+        anthology_base_url = request["anthology_base_url"]
+        students = request["students"]
+
+        # get data from API and create dictionary of anthology_student_id: prep_program
+        prep_program_dict = get_prep_program_dict(anthology_api_key, anthology_base_url)
+
+        # add prep_program data in
+        modified_students = [
+            {
+                **student,
+                "prep_program": (prep_program_dict.get(student["anthology_student_id"], None)),
+            }
+            for student in students
+        ]
+
+        return func.HttpResponse(
+            json.dumps(
+                {"students": modified_students},
+                default=str,
+            ),
+            status_code=200,
+        )
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), indent=2), status_code=400)
+
+
+
+#######################################################################
+# Scope1 -Part4.6 - Get Academic Graduation Hold and Registration Hold
+#######################################################################
+
+
+@app.function_name(name="GetAcademicGraduationHoldRegistrationHold")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_academic_graduation_hold_registration_hold(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request["anthology_api_key"]
+        anthology_base_url = request["anthology_base_url"]
+        students = request["students"]
+
+        modified_students = asyncio.run(get_graduation_hold_registration_hold_asynchronously(anthology_api_key, anthology_base_url, students))
+
+        return func.HttpResponse(
+            json.dumps({"students": modified_students}, default=str), 
+            status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
+
+
 ###########################################################
 # Scope1 - Part4 - Get Student Courses And Enrollment Ids
 ###########################################################
@@ -235,6 +375,9 @@ def get_sis_course_ids_enrollment_id(req: func.HttpRequest) -> func.HttpResponse
                 "first_name": student["first_name"],
                 "last_name": student["last_name"],
                 "email": student["email"],
+                "program": student["program"],
+                "prep_program": student["prep_program"],
+                "location": student["location"],
                 "canvas_student_id": student["canvas_student_id"],
             }
             for student in students
@@ -349,7 +492,7 @@ def get_canvas_course_name(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(f"modified_student_courses_data: {modified_student_courses_data}")
 
         return func.HttpResponse(
-            json.dumps({"student_courses": modified_student_courses_data}, indent=2),
+            json.dumps({"student_courses": modified_student_courses_data}, default=str),
             status_code=200,
         )
 
@@ -460,7 +603,7 @@ def get_course_score_grade_link(req: func.HttpRequest) -> func.HttpResponse:
                 conn.commit()
 
         return func.HttpResponse(
-            json.dumps({"student_courses": modified_student_courses_data}, indent=2),
+            json.dumps({"student_courses": modified_student_courses_data}, default=str),
             status_code=200,
         )
 
@@ -546,7 +689,7 @@ def get_attendance_data(req: func.HttpRequest) -> func.HttpResponse:
                 conn.commit()
 
         return func.HttpResponse(
-            json.dumps({"student_attendance_data": student_attendance_data}, indent=2),
+            json.dumps({"student_attendance_data": student_attendance_data}, default=str),
             status_code=200,
         )
 
