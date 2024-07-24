@@ -28,8 +28,13 @@ def get_students(filtered_school_status_ids: list, anthology_base_url: str, anth
     transport = httpx.HTTPTransport(retries=4)
     with httpx.Client(transport=transport) as client:
         for school_status_id in filtered_school_status_ids:
-            url = f"{anthology_base_url}/ds/campusnexus/StudentEnrollmentPeriods?$filter=SchoolStatusId eq {school_status_id}&$expand=Campus($select=Name)&$select=Id,StudentId,ProgramVersionName"
-            response = client.get(url=url, headers=headers, timeout=30.0)
+            url = f"{anthology_base_url}/ds/campusnexus/StudentEnrollmentPeriods"
+            params = {
+                "$filter": f"SchoolStatusId eq {school_status_id}",
+                "$expand": "Campus($select=Name),SchoolStatus($select=Name)",
+                "$select": "Id,StudentId,ProgramVersionName,Lda,EnrollmentDate,GraduationDate",
+            }
+            response = client.get(url=url, headers=headers, params=params, timeout=30.0)
 
             results = response.json()
             students.extend(results["value"])
