@@ -54,7 +54,7 @@ async def get_canvas_course_name(
             if response.status_code == 404:
                 return {
                     "sis_course_id": sis_course_id,
-                    "canvas_course_name": None,
+                    "canvas_course_name": "",
                     "canvas_course_id": None,
                 }
 

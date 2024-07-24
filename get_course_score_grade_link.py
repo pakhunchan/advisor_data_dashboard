@@ -33,6 +33,20 @@ async def get_canvas_enrollments(
     student_course_dict: dict,
     client: httpx.AsyncClient,
 ) -> dict:
+    
+    # for students who are not registered in any classes, their sis_course_id is null and we can skip the API step
+    if student_course_dict[anthology_student_number][0] == None:
+        return {
+            anthology_student_number: {
+                sis_course_id: {
+                    "current_score": None,
+                    "current_grade": None
+                }
+                for sis_course_id in student_course_dict[anthology_student_number]
+            }
+        }
+
+    # need to retrieve API results for all other students
     max_retries = 3
     base_delay = 2
 

@@ -457,6 +457,34 @@ def get_sis_course_ids_enrollment_id(req: func.HttpRequest) -> func.HttpResponse
 
         logging.info(f"student_courses_data: {student_courses_data}")
 
+        #############
+        #############
+        # Need to include students who aren't registered in any courses into the data
+        all_active_students_ids = set(student_info_dict.keys())
+        active_students_ids_with_registered_courses = {
+            student_course["anthology_student_id"] for student_course in student_courses_data
+        }
+        active_students_ids_without_registered_courses = (
+            all_active_students_ids - active_students_ids_with_registered_courses
+        )
+
+        filler_student_course_data = [
+            {
+                "anthology_student_id": student_id,
+                **student_info_dict[student_id],
+                "sis_course_id": None,
+                "class_section_id": None,
+                "student_enrollment_period_id": None,
+                "anthology_student_course_id": None,
+            }
+            for student_id in active_students_ids_without_registered_courses
+        ]
+
+        student_courses_data.extend(filler_student_course_data)
+
+        #############
+        #############
+
         return func.HttpResponse(json.dumps({"student_courses": student_courses_data}, default=str), status_code=200)
 
     except Exception as err:
@@ -591,9 +619,9 @@ def get_course_score_grade_link(req: func.HttpRequest) -> func.HttpResponse:
 
         modified_student_courses_data = []
         for course in student_courses:
-            # this should only happen in test Canvas
-            if not course["course_name"]:
-                continue
+            # # this should only happen in test Canvas
+            # if not course["course_name"]:
+            #     continue
 
             anthology_student_number = course["anthology_student_number"]
             sis_course_id = course["sis_course_id"]
