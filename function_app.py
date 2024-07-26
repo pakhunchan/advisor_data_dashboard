@@ -390,8 +390,47 @@ def get_academic_status(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(traceback.format_exc(), status_code=400)
 
 
+##################################################
+# Scope1 -Part4 - Get Student's Academic Advisor
+##################################################
+
+
+@app.function_name(name="GetStudentsAcademicAdvisor")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def get_students_academic_advisor(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        anthology_api_key = request.pop("anthology_api_key")
+        logging.info(f"request: {json.dumps(request, default=str)}")
+        # student_courses = request["student_courses"]
+        students = request["students"]
+        anthology_base_url = request["anthology_base_url"]
+
+        # first, get all staff data
+        staff_id_dict = get_all_staff_ids(anthology_api_key, anthology_base_url)
+
+        # next, get each student's academic advisor
+        advisors_dict = get_advisors_info(anthology_api_key, anthology_base_url, staff_id_dict)
+
+        # finally, format the data
+        modified_students_data = []
+        for student in students:
+            student_info = {
+                **student,
+                "advisor_name": advisors_dict.get(student["student_enrollment_period_id"], None),
+            }
+
+            modified_students_data.append(student_info)
+
+        return func.HttpResponse(json.dumps({"students": modified_students_data}), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
 ###########################################################
-# Scope1 - Part4 - Get Student Courses And Enrollment Ids
+# Scope1 - Part5 - Get Student Courses And Enrollment Ids
 ###########################################################
 
 
@@ -429,6 +468,7 @@ def get_sis_course_ids_enrollment_id(req: func.HttpRequest) -> func.HttpResponse
                 "last_date_of_attendance": student["last_date_of_attendance"],
                 "enrollment_date": student["enrollment_date"],
                 "graduation_date": student["graduation_date"],
+                "advisor_name": student["advisor_name"],
             }
             for student in students
         }
@@ -458,44 +498,6 @@ def get_sis_course_ids_enrollment_id(req: func.HttpRequest) -> func.HttpResponse
         logging.info(f"student_courses_data: {student_courses_data}")
 
         return func.HttpResponse(json.dumps({"student_courses": student_courses_data}, default=str), status_code=200)
-
-    except Exception as err:
-        logging.exception(err)
-        return func.HttpResponse(traceback.format_exc(), status_code=400)
-
-
-##################################################
-# Scope1 -Part5 - Get Student's Academic Advisor
-##################################################
-
-
-@app.function_name(name="GetStudentsAcademicAdvisor")
-@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
-def get_students_academic_advisor(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        request = req.get_json()
-        anthology_api_key = request.pop("anthology_api_key")
-        logging.info(f"request: {json.dumps(request, default=str)}")
-        student_courses = request["student_courses"]
-        anthology_base_url = request["anthology_base_url"]
-
-        # first, get all staff data
-        staff_id_dict = get_all_staff_ids(anthology_api_key, anthology_base_url)
-
-        # next, get each student's academic advisor
-        advisors_dict = get_advisors_info(anthology_api_key, anthology_base_url, staff_id_dict)
-
-        # finally, format the data
-        modified_student_courses_data = []
-        for student in student_courses:
-            student_info = {
-                **student,
-                "advisor_name": advisors_dict.get(student["student_enrollment_period_id"], None),
-            }
-
-            modified_student_courses_data.append(student_info)
-
-        return func.HttpResponse(json.dumps({"student_courses": modified_student_courses_data}), status_code=200)
 
     except Exception as err:
         logging.exception(err)
@@ -619,34 +621,11 @@ def get_course_score_grade_link(req: func.HttpRequest) -> func.HttpResponse:
                 VALUES (SOURCE.anthology_student_id, SOURCE.course_name, SOURCE.current_score, SOURCE.current_grade, SOURCE.canvas_grade_link, SOURCE.class_section_id);
         """
 
-        sql_statement_merge_insert_staging_student_info = """
-            MERGE INTO staging_student_info AS target 
-            USING (VALUES (%(anthology_student_id)d, %(anthology_student_number)d, %(canvas_student_id)d, %(first_name)s, %(last_name)s, %(email)s, %(advisor_name)s)) AS SOURCE (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
-            ON 
-                target.anthology_student_id = SOURCE.anthology_student_id 
-            WHEN MATCHED THEN
-                UPDATE SET 
-                    target.anthology_student_number = SOURCE.anthology_student_number, 
-                    target.canvas_student_id = SOURCE.canvas_student_id, 
-                    target.first_name = SOURCE.first_name, 
-                    target.last_name = SOURCE.last_name, 
-                    target.email = SOURCE.email, 
-                    target.advisor_name = SOURCE.advisor_name
-            WHEN NOT MATCHED THEN 
-                INSERT (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
-                VALUES (SOURCE.anthology_student_id, SOURCE.anthology_student_number, SOURCE.canvas_student_id, SOURCE.first_name, SOURCE.last_name, SOURCE.email, SOURCE.advisor_name);
-        """
-
         with pymssql.connect(**database_connector) as conn:
             with conn.cursor(as_dict=True) as cursor:
                 # insert student_course_performance data into the staging table
                 cursor.executemany(
                     sql_statement_merge_insert_staging_student_course_performance,
-                    modified_student_courses_data,
-                )
-
-                cursor.executemany(
-                    sql_statement_merge_insert_staging_student_info,
                     modified_student_courses_data,
                 )
 
@@ -748,8 +727,56 @@ def get_attendance_data(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps(traceback.format_exc(), default=str), status_code=400)
 
 
+# ########################################
+# # Scope2 - Part1c - Insert Student Info
+# ########################################
+
+
+@app.function_name(name="InsertStudentInfoIntoSqlDb")
+@app.route(route="", auth_level=func.AuthLevel.FUNCTION)
+def insert_student_info_into_sql_db(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        request = req.get_json()
+        students = request["students"]
+        database_connector = request["database_connector"]
+
+        sql_statement_merge_insert_staging_student_info = """
+            MERGE INTO staging_student_info AS target
+            USING (VALUES (%(anthology_student_id)d, %(anthology_student_number)d, %(canvas_student_id)d, %(first_name)s, %(last_name)s, %(email)s, %(advisor_name)s)) AS SOURCE (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
+            ON
+                target.anthology_student_id = SOURCE.anthology_student_id
+            WHEN MATCHED THEN
+                UPDATE SET
+                    target.anthology_student_number = SOURCE.anthology_student_number,
+                    target.canvas_student_id = SOURCE.canvas_student_id,
+                    target.first_name = SOURCE.first_name,
+                    target.last_name = SOURCE.last_name,
+                    target.email = SOURCE.email,
+                    target.advisor_name = SOURCE.advisor_name
+            WHEN NOT MATCHED THEN
+                INSERT (anthology_student_id, anthology_student_number, canvas_student_id, first_name, last_name, email, advisor_name)
+                VALUES (SOURCE.anthology_student_id, SOURCE.anthology_student_number, SOURCE.canvas_student_id, SOURCE.first_name, SOURCE.last_name, SOURCE.email, SOURCE.advisor_name);
+        """
+        import pymssql
+
+        with pymssql.connect(**database_connector) as conn:
+            with conn.cursor(as_dict=True) as cursor:
+                cursor.executemany(
+                    sql_statement_merge_insert_staging_student_info,
+                    students,
+                )
+
+                conn.commit()
+
+        return func.HttpResponse(json.dumps({"students": students}), status_code=200)
+
+    except Exception as err:
+        logging.exception(err)
+        return func.HttpResponse(traceback.format_exc(), status_code=400)
+
+
 #######################################################
-# Scope2 - Part1c - Insert Master Student Tracker Data
+# Scope2 - Part1d - Insert Master Student Tracker Data
 #######################################################
 
 
@@ -760,12 +787,13 @@ def calculate_and_insert_master_student_tracker_data(req: func.HttpRequest) -> f
         request = req.get_json()
         database_connector = request["database_connector"]
         student_courses = request["student_courses"]
+        students = request["students"]
 
-        master_student_tracker_data = []
+        students_with_course_registration = []
         seen = set()
         for student in student_courses:
             if student["anthology_student_id"] not in seen:
-                master_student_tracker_data.append(
+                students_with_course_registration.append(
                     {
                         "anthology_student_id": student["anthology_student_id"],
                         "sis_link": student["sis_link"],
@@ -784,6 +812,31 @@ def calculate_and_insert_master_student_tracker_data(req: func.HttpRequest) -> f
                     }
                 )
             seen.add(student["anthology_student_id"])
+
+        # some active students have not registered into any courses yet, but we still want to include them in the Master Student Tracker
+        students_without_course_registration = [
+            {
+                "anthology_student_id": student.get("anthology_student_id"),
+                "sis_link": student.get("sis_link"),
+                "program": student.get("program"),
+                "area_of_study": student.get("area_of_study"),
+                "residency": student.get("residency"),
+                "location": student.get("location"),
+                "prep_program": student.get("prep_program"),
+                "academic_graduation_hold": None,
+                "registration_hold": None,
+                "americorp_status": student.get("americorp_status"),
+                "academic_status": student.get("academic_status"),
+                "last_date_of_attendance": student.get("last_date_of_attendance"),
+                "enrollment_date": student.get("enrollment_date"),
+                "graduation_date": student.get("graduation_date"),
+            }
+            for student in students
+            if student["anthology_student_id"] not in seen
+        ]
+
+        # combine both groups of students before inserting into SQL db
+        master_student_tracker_data = students_with_course_registration + students_without_course_registration
 
         # add data into staging tables
         import pymssql

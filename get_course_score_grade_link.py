@@ -48,6 +48,22 @@ async def get_canvas_enrollments(
             response = await client.get(url=url, headers=headers, params=params, timeout=30.0)
             response.raise_for_status()
             break
+        except httpx.HTTPStatusError as err:
+            # Canvas returns a 404 error if the enrollment doesn't exist
+            if err.response.status_code == 404:
+                logging.exception(err)
+                # Return nulls when enrollment doesn't exist
+                return {
+                    anthology_student_number: {
+                        sis_course_id: {
+                            "current_score": None,
+                            "current_grade": None,
+                        }
+                        for sis_course_id in student_course_dict[anthology_student_number]
+                    }
+                }
+            else:
+                raise
         except Exception as err:
             logging.exception(err)
             if attempt >= max_retries:
@@ -66,7 +82,6 @@ def get_formatted_results(anthology_student_number, response, student_course_dic
             sis_course_id: {
                 "current_score": None,
                 "current_grade": None,
-                # "canvas_grade_link": None,
             }
             for sis_course_id in student_course_dict[anthology_student_number]
         }
